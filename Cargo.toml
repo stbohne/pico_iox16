@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["pico_iox16_protocol", "pico_iox16_firmware", "pico_iox16_pico2"]
