@@ -130,8 +130,8 @@ impl<const NOM: u32, const DENOM: u32> ThresholdData<NOM, DENOM> {
         now: Instant<u64, NOM, DENOM>,
         threshold: &nvm::Threshold,
     ) -> Self {
-        let above_threshold = value >= threshold.threshold_high;
-        let below_threshold = value <= threshold.threshold_low;
+        let above_threshold = value > threshold.threshold_high;
+        let below_threshold = value < threshold.threshold_low;
         if above_threshold {
             if self.above_count == 0 {
                 self.last_above_threshold = now;
