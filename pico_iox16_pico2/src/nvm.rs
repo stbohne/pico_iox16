@@ -43,10 +43,10 @@ impl NonvolatileStorage<Board> for Nvm {
 
     fn write(&self, data: &[u8; 4096]) -> nb::Result<(), Self::Error> {
         interrupt::free(|_| unsafe {
-            flash_range_erase(&raw const CONFIG as *const u8 as u32, 4096, 4096, 0xD8);
+            flash_range_erase(addr_of!(CONFIG) as u32, 4096, 4096, 0xD8);
             flash_range_program(
-                &raw const CONFIG as *const u8 as u32,
-                &raw const data as *const u8,
+                addr_of!(CONFIG) as u32,
+                data.as_ptr(),
                 4096,
             );
         });
