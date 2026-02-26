@@ -1,0 +1,13 @@
+[package]
+name = "pico_iox16_tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+clap = { version = "4.5.60", features = ["derive"] }
+pico_iox16_protocol = { path = "../pico_iox16_protocol" }
+zerocopy = "0.8.39"
+tokio = { version = "1.49.0", features = ["io-util", "macros", "rt", "time"] }
+tokio-serial = "5.4.5"
+crossterm = "0.29.0"

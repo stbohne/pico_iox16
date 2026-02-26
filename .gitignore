@@ -3,3 +3,4 @@ Cargo.lock
 target/
 .vscode/*
 rp-hal
+pico_iox16_tool/deploy
