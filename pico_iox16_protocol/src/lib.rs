@@ -10,7 +10,9 @@ use zerocopy::{
 
 pub const MAGIC: [u8; 2] = *b"OM";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, Format)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, Format, derive_more::Display,
+)]
 #[repr(u16)]
 pub enum Command {
     /// Check if the device is alive and responding.
@@ -19,22 +21,22 @@ pub enum Command {
     InfoGet = 1,
     /// Set the current configuration of the device. Persists across reboots.
     ConfigSet = 2,
-    /// Get the current configuration of the device. 
+    /// Get the current configuration of the device.
     ConfigGet = 3,
     /// Set the output states. Resets after reboot.
     OutputSet = 4,
     /// Get the output states.
     OutputGet = 5,
     /// Get the current input values.
-    /// 
+    ///
     /// Returns a 16-bit signed integer for each input avaraged over the last reads
     /// performed since the previous `InputGet` or `InputGetFull` request.
     InputGet = 6,
     /// Get the current input values along with additional statistics and reset
-    /// the accumulated data. 
+    /// the accumulated data.
     InputGetFull = 7,
     /// Set the input calibrations. Persists across reboots.
-    /// 
+    ///
     /// Each input can be scaled an shifted individually. This is intended to store
     /// calibration on the device itself, but it can be used to offload minor preprocessing
     /// from the host.
@@ -42,7 +44,7 @@ pub enum Command {
     /// Get the input calibrations.
     InputGetCalibrations = 9,
     /// Set the input thresholds. Persists across reboots.
-    /// 
+    ///
     /// Each input can be configured with a high and low threshold, as well as debounce parameters.
     InputSetThresholds = 10,
     /// Get the input thresholds.
@@ -51,6 +53,8 @@ pub enum Command {
     InputGetThresholdTimes = 12,
     /// Get the current states of the input thresholds.
     InputGetThresholdStates = 13,
+    /// Reboot the device.
+    Reboot = 14,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +73,7 @@ pub enum Request<'a> {
     InputGetThresholds(&'a InputGetThresholdsReq),
     InputGetThresholdTimes(&'a InputGetThresholdTimesReq),
     InputGetThresholdStates(&'a InputGetThresholdStatesReq),
+    Reboot(&'a RebootReq),
 }
 impl Request<'_> {
     pub fn command(&self) -> Command {
@@ -87,6 +92,7 @@ impl Request<'_> {
             Request::InputGetThresholds(_) => Command::InputGetThresholds,
             Request::InputGetThresholdTimes(_) => Command::InputGetThresholdTimes,
             Request::InputGetThresholdStates(_) => Command::InputGetThresholdStates,
+            Request::Reboot(_) => Command::Reboot,
         }
     }
 }
@@ -107,6 +113,7 @@ pub enum Response<'a> {
     InputGetThresholds(&'a InputGetThresholdsRes),
     InputGetThresholdTimes(&'a InputGetThresholdTimesRes),
     InputGetThresholdStates(&'a InputGetThresholdStatesRes),
+    Reboot(&'a RebootRes),
 }
 impl Response<'_> {
     pub fn command(&self) -> Command {
@@ -125,6 +132,7 @@ impl Response<'_> {
             Response::InputGetThresholds(_) => Command::InputGetThresholds,
             Response::InputGetThresholdTimes(_) => Command::InputGetThresholdTimes,
             Response::InputGetThresholdStates(_) => Command::InputGetThresholdStates,
+            Response::Reboot(_) => Command::Reboot,
         }
     }
 }
@@ -142,6 +150,7 @@ pub trait RequestTrait:
     + KnownLayout
 {
     const COMMAND: Command;
+    const TIMEOUT_US: u32;
     type Response: Debug
         + Clone
         + Copy
@@ -152,6 +161,7 @@ pub trait RequestTrait:
         + Unaligned
         + Immutable
         + KnownLayout;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response>;
 }
 
 #[derive(
@@ -165,8 +175,15 @@ pub struct CheckReq;
 #[repr(C)]
 pub struct CheckRes;
 impl RequestTrait for CheckReq {
-    const COMMAND: Command = Command::Check;
+        const COMMAND: Command = Command::Check;
+        const TIMEOUT_US: u32 = 100;
     type Response = CheckRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::Check(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -192,7 +209,14 @@ pub struct InfoGetRes {
 }
 impl RequestTrait for InfoGetReq {
     const COMMAND: Command = Command::InfoGet;
+    const TIMEOUT_US: u32 = 100;
     type Response = InfoGetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InfoGet(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -228,7 +252,14 @@ impl Default for OutputSetReq {
 pub struct OutputSetRes;
 impl RequestTrait for OutputSetReq {
     const COMMAND: Command = Command::OutputSet;
+    const TIMEOUT_US: u32 = 100;
     type Response = OutputSetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::OutputSet(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -243,7 +274,14 @@ pub struct OutputGetReq;
 pub struct OutputGetRes(pub [OutputGroup; 8]);
 impl RequestTrait for OutputGetReq {
     const COMMAND: Command = Command::OutputGet;
+    const TIMEOUT_US: u32 = 100;
     type Response = OutputGetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::OutputGet(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -257,14 +295,21 @@ pub struct InputGetReq;
 #[repr(C)]
 pub struct InputGetRes {
     /// The current value of each input after calibration. Average over the reads since the previous `InputGet` or `InputGetFull` request.
-    /// 
-    /// **Note**: If no reads have been performed since the previous `InputGet` or `InputGetFull` request, 
+    ///
+    /// **Note**: If no reads have been performed since the previous `InputGet` or `InputGetFull` request,
     /// the same value as in the previous `InputGetRes` will be returned.
     pub values: [I16<LE>; 16],
 }
 impl RequestTrait for InputGetReq {
     const COMMAND: Command = Command::InputGet;
+    const TIMEOUT_US: u32 = 100;
     type Response = InputGetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGet(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -297,7 +342,14 @@ pub struct InputGetFullRes {
 }
 impl RequestTrait for InputGetFullReq {
     const COMMAND: Command = Command::InputGetFull;
+    const TIMEOUT_US: u32 = 100;
     type Response = InputGetFullRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGetFull(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 /// Performed in order the following order and with 32 bit arithmetic:
@@ -334,7 +386,14 @@ pub struct InputSetCalibrationsReq(pub [InputCalibration; 16]);
 pub struct InputSetCalibrationsRes;
 impl RequestTrait for InputSetCalibrationsReq {
     const COMMAND: Command = Command::InputSetCalibrations;
+    const TIMEOUT_US: u32 = 500000;
     type Response = InputSetCalibrationsRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputSetCalibrations(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -349,7 +408,14 @@ pub struct InputGetCalibrationsReq;
 pub struct InputGetCalibrationsRes(pub [InputCalibration; 16]);
 impl RequestTrait for InputGetCalibrationsReq {
     const COMMAND: Command = Command::InputGetCalibrations;
+    const TIMEOUT_US: u32 = 100;
     type Response = InputGetCalibrationsRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGetCalibrations(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -362,13 +428,13 @@ pub struct InputThreshold {
     /// The low threshold for the calibrated input. If the input value crosses from above to below this threshold, a low crossing event is recorded. Default is `-32768`.
     pub threshold_low: I16<LE>,
     /// The debounce time in microseconds. Default is `0`, which means no debouncing.
-    /// 
+    ///
     /// A debounced event is recorded when both `debounce_time_us` and `debounce_count` conditions are met.
     pub debounce_time_us: U32<LE>,
-    /// The number of consecutive readings after the first reading that must be above 
-    /// the high threshold or below the low threshold before a crossing event is recorded. 
+    /// The number of consecutive readings after the first reading that must be above
+    /// the high threshold or below the low threshold before a crossing event is recorded.
     /// Default is `0`, which means no debouncing.
-    /// 
+    ///
     /// A debounced event is recorded when both `debounce_time_us` and `debounce_count` conditions are met.
     pub debounce_count: U16<LE>,
 }
@@ -385,7 +451,14 @@ pub struct InputSetThresholdsReq(pub [InputThreshold; 16]);
 pub struct InputSetThresholdsRes;
 impl RequestTrait for InputSetThresholdsReq {
     const COMMAND: Command = Command::InputSetThresholds;
+    const TIMEOUT_US: u32 = 500000;
     type Response = InputSetThresholdsRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputSetThresholds(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -400,7 +473,14 @@ pub struct InputGetThresholdsReq;
 pub struct InputGetThresholdsRes(pub [InputThreshold; 16]);
 impl RequestTrait for InputGetThresholdsReq {
     const COMMAND: Command = Command::InputGetThresholds;
+    const TIMEOUT_US: u32 = 100;
     type Response = InputGetThresholdsRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGetThresholds(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -414,12 +494,12 @@ pub struct InputGetThresholdTimesReq;
 #[repr(C)]
 pub struct InputThresholdTimes {
     /// The time of the last low crossing event for the input in microseconds since boot. If no low crossing event has been recorded, this will be `0`.
-    /// 
+    ///
     /// **Note**: This is the 'true' time of the crossing event, not the time when the debounce condition was met.
     /// **Note**: Timer ticks are in microseconds.
     pub last_low: U64<LE>,
     /// The time of the last high crossing event for the input in microseconds since boot. If no high crossing event has been recorded, this will be `0`.
-    /// 
+    ///
     /// **Note**: This is the 'true' time of the crossing event, not the time when the debounce condition was met.
     /// **Note**: Timer ticks are in microseconds.
     pub last_high: U64<LE>,
@@ -436,7 +516,14 @@ pub struct InputGetThresholdTimesRes {
 }
 impl RequestTrait for InputGetThresholdTimesReq {
     const COMMAND: Command = Command::InputGetThresholdTimes;
+    const TIMEOUT_US: u32 = 100;
     type Response = InputGetThresholdTimesRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGetThresholdTimes(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -458,6 +545,13 @@ pub struct InputGetThresholdStatesRes {
 impl RequestTrait for InputGetThresholdStatesReq {
     const COMMAND: Command = Command::InputGetThresholdStates;
     type Response = InputGetThresholdStatesRes;
+    const TIMEOUT_US: u32 = 100;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::InputGetThresholdStates(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -465,10 +559,12 @@ impl RequestTrait for InputGetThresholdStatesReq {
 )]
 #[repr(C)]
 pub struct Config {
-    /// Device address. Address `0xFFFF` is reserved for unconfigured devices.
+    /// Device address. Address `0xFFFF` is reserved for unconfigured devices. Effective only after reboot.
     pub address: U16<LE>,
+    /// The baudrate to use for communication with the device. Effective only after reboot.
+    pub baudrate: U32<LE>,
     #[doc(hidden)]
-    pub reserved: [u8; 2],
+    pub _reserved: [u8; 2],
 }
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, IntoBytes, TryFromBytes, Unaligned, Immutable, KnownLayout,
@@ -482,7 +578,14 @@ pub struct ConfigGetReq;
 pub struct ConfigGetRes(pub Config);
 impl RequestTrait for ConfigGetReq {
     const COMMAND: Command = Command::ConfigGet;
+    const TIMEOUT_US: u32 = 100;
     type Response = ConfigGetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::ConfigGet(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -497,7 +600,36 @@ pub struct ConfigSetReq(pub Config);
 pub struct ConfigSetRes;
 impl RequestTrait for ConfigSetReq {
     const COMMAND: Command = Command::ConfigSet;
+    const TIMEOUT_US: u32 = 500000;
     type Response = ConfigSetRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::ConfigSet(res) => Some(res),
+            _ => None,
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, IntoBytes, TryFromBytes, Unaligned, Immutable, KnownLayout,
+)]
+#[repr(C)]
+pub struct RebootReq;
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, IntoBytes, TryFromBytes, Unaligned, Immutable, KnownLayout,
+)]
+#[repr(C)]
+pub struct RebootRes;
+impl RequestTrait for RebootReq {
+    const COMMAND: Command = Command::Reboot;
+    const TIMEOUT_US: u32 = 500000;
+    type Response = RebootRes;
+    fn get_response(response: Response<'_>) -> Option<&Self::Response> {
+        match response {
+            Response::Reboot(res) => Some(res),
+            _ => None,
+        }
+    }
 }
 
 #[derive(
@@ -569,9 +701,9 @@ impl<T: IntoBytes + Unaligned + Immutable> Message<T> {
 }
 
 /// Searches for the next valid message in the given byte slice and returns it along with the number of bytes processed.
-/// If a valid message is found, the returned byte slice will contain the header and payload of the message, but not the footer. 
+/// If a valid message is found, the returned byte slice will contain the header and payload of the message, but not the footer.
 /// If no valid message is found, the returned byte slice will be `None`.
-/// The number of bytes processed is the number of bytes that were consumed from the input byte slice, 
+/// The number of bytes processed is the number of bytes that were consumed from the input byte slice,
 /// including any invalid data that was skipped over. Therefore it may consume bytes even if no valid message is found.
 pub fn next_message(mut bytes: &[u8]) -> (Option<(&Header, &[u8])>, usize) {
     let mut processed = 0;
@@ -607,7 +739,7 @@ pub fn next_message(mut bytes: &[u8]) -> (Option<(&Header, &[u8])>, usize) {
     (None, processed)
 }
 
-/// Parses the next message from the given byte slice and returns its address and the payload as a [`Response`] 
+/// Parses the next message from the given byte slice and returns its address and the payload as a [`Response`]
 /// along with the number of bytes processed. Skips invalid message headers and
 /// messages with invalid checksums.
 pub fn master_next<'a>(buffer: &'a [u8]) -> (Option<(u16, Response<'a>)>, usize) {
@@ -708,10 +840,11 @@ pub fn master_next<'a>(buffer: &'a [u8]) -> (Option<(u16, Response<'a>)>, usize)
                 processed,
             )
         }
+        Ok(Command::Reboot) => (Some((address, Response::Reboot(&RebootRes))), processed),
     }
 }
 
-/// Parses the next message with the given address from the given byte slice and returns the payload 
+/// Parses the next message with the given address from the given byte slice and returns the payload
 /// as a [`Request`] along with the number of bytes processed. Skips invalid message headers,
 /// messages with invalid checksums and messages with a different address.
 pub fn slave_next<'a>(buffer: &'a [u8], address: u16) -> (Option<Request<'a>>, usize) {
@@ -772,6 +905,7 @@ pub fn slave_next<'a>(buffer: &'a [u8], address: u16) -> (Option<Request<'a>>, u
             )),
             processed,
         ),
+        Ok(Command::Reboot) => (Some(Request::Reboot(&RebootReq)), processed),
     }
 }
 

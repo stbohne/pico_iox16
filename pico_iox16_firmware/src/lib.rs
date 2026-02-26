@@ -12,15 +12,14 @@ use embedded_hal::digital::OutputPin;
 use fugit::{Duration, Instant};
 use futures::future::{Either, select};
 use pico_iox16_protocol::{
-    CheckReq, CheckRes, Command, ConfigGetReq, InfoGetReq, InfoGetRes, InputGetReq, Message,
-    OutputGetReq, Request, slave_next,
+    CheckReq, CheckRes, Command, ConfigGetReq, InfoGetReq, InfoGetRes, InputGetReq, Message, OutputGetReq, RebootReq, Request, slave_next
 };
 use runtime::{Read, Timer, Write};
 use zerocopy::{Immutable, IntoBytes};
 
 use crate::{
     input::InputLoop,
-    runtime::{Elapsed as _, ReadError, yield_now},
+    runtime::{Elapsed as _, ReadError, System, WaitFor as _, yield_now},
 };
 
 trait HandleMessage {
@@ -135,6 +134,7 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
         output: &mut O,
         nvm: &nvm::Nvm<NVM, Board>,
         input_loop: &InputLoop<NOM, DENOM>,
+        system: &impl System<Board>,
     ) -> Result<
         !,
         MainLoopError<
@@ -149,6 +149,8 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
     where
         Instant<u64, NOM, DENOM>: Sub<Output = Duration<u64, NOM, DENOM>>,
     {
+        let address = nvm.get().config.address;
+        info!("Starting main loop with {:?}", nvm.get_config());
         let mut buf_len = 0;
         let mut buf = [0; 256];
         let mut last_receive = timer.now();
@@ -173,7 +175,6 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
             }
 
             loop {
-                let address = nvm.get().config.address;
                 let (maybe_request, processed) = slave_next(&buf[..buf_len], address);
                 if let Some(request) = maybe_request {
                     info!("Received request: {:?}", request.command());
@@ -383,6 +384,18 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
                             .await
                             .map_err(|err| error_coerce!(err))?;
                         }
+                        Request::Reboot(RebootReq) => {
+                            info!("Rebooting address {} @ {} Hz", nvm.get().config.address, nvm.get().config.baudrate);
+                            Self::write_all_bytes(
+                                io,
+                                io_send,
+                                &Message::new_response(address, Command::Reboot, ()),
+                            )
+                            .await
+                            .map_err(|err| error_coerce!(err))?;
+                            timer.wait_for(Duration::<u64, _, _>::millis(1)).await;
+                            system.reboot();
+                        }
                     }
                     info!("Handled request, response sent");
                 }
@@ -406,6 +419,7 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
         O: output::Output<Board>,
         I: input::Input<Board, Error: From<!>>,
         NVM: nvm::NonvolatileStorage<Board>,
+        S: System<Board>,
     >(
         &mut self,
         io: &mut Io,
@@ -413,7 +427,8 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
         timer: &T,
         output: &mut O,
         input: &mut I,
-        nvm: NVM,
+        nvm: &nvm::Nvm<NVM, Board>,
+        system: &S,
     ) -> Result<
         !,
         MainLoopError<
@@ -428,7 +443,6 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
     where
         Instant<u64, NOM, DENOM>: Sub<Output = Duration<u64, NOM, DENOM>>,
     {
-        let nvm = nvm::Nvm::new(nvm).await.map_err(MainLoopError::Nvm)?;
         let control = pin!(async {
             let r: Result<
                 !,
@@ -441,7 +455,7 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
                     <NVM as nvm::NonvolatileStorage<Board>>::Error,
                 >,
             > = self
-                .run(io, io_send, timer, output, &nvm, &self.input_loop)
+                .run(io, io_send, timer, output, nvm, &self.input_loop, system)
                 .await
                 .map_err(|err| err.convert());
             r
@@ -459,7 +473,7 @@ impl<const NOM: u32, const DENOM: u32> MainLoop<NOM, DENOM> {
                 >,
             > = self
                 .input_loop
-                .run(input, timer, &nvm)
+                .run(input, timer, nvm)
                 .await
                 .map_err(|err| match err {
                     Either::Left(err) => MainLoopError::Input(err),

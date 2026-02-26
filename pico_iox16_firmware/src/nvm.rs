@@ -5,21 +5,24 @@ use pico_iox16_protocol::{
     InputGetCalibrationsRes, InputGetThresholdsReq, InputGetThresholdsRes, InputSetCalibrationsReq,
     InputSetCalibrationsRes, InputSetThresholdsReq, InputSetThresholdsRes,
 };
+use static_assertions::const_assert;
 use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
 use crate::{HandleMessage, nb_await};
 
-#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable)]
+#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable, defmt::Format)]
 #[repr(C)]
-pub(crate) struct Config {
+pub struct Config {
     pub address: u16,
     pub _padding: [u8; 2],
+    pub baudrate: u32,
 }
 impl From<pico_iox16_protocol::Config> for Config {
     fn from(value: pico_iox16_protocol::Config) -> Self {
         Self {
             address: value.address.into(),
             _padding: [0; 2],
+            baudrate: value.baudrate.into(),
         }
     }
 }
@@ -27,7 +30,8 @@ impl From<Config> for pico_iox16_protocol::Config {
     fn from(value: Config) -> Self {
         Self {
             address: value.address.into(),
-            reserved: [0; 2],
+            _reserved: [0; 2],
+            baudrate: value.baudrate.into(),
         }
     }
 }
@@ -63,7 +67,7 @@ impl<I: Deref<Target = Nvm<NVM, Board>>, NVM, Board: ?Sized> HandleMessage
     }
 }
 
-#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable)]
+#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable, defmt::Format)]
 #[repr(C)]
 pub(crate) struct Calibration {
     /// The value to multiply the raw input by.
@@ -143,7 +147,7 @@ impl<I: Deref<Target = Nvm<NVM, Board>>, NVM, Board: ?Sized> HandleMessage
     }
 }
 
-#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable)]
+#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, Immutable, defmt::Format)]
 #[repr(C)]
 pub(crate) struct Threshold {
     /// The value above which the input is considered above threshold
@@ -179,13 +183,14 @@ impl From<Threshold> for pico_iox16_protocol::InputThreshold {
     }
 }
 
-#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, KnownLayout, Immutable)]
+#[derive(Debug, Clone, Copy, IntoBytes, TryFromBytes, KnownLayout, Immutable, defmt::Format)]
 #[repr(C)]
 pub(crate) struct NonvolatileData {
     pub config: Config,
     pub calibrations: [Calibration; 16],
     pub thresholds: [Threshold; 16],
 }
+const_assert!(core::mem::size_of::<NonvolatileData>() <= 4096);
 
 pub trait NonvolatileStorage<Board: ?Sized> {
     type Error;
@@ -197,6 +202,7 @@ pub const fn default_nonvolatile_data() -> [u8; 4096] {
     let default = NonvolatileData {
         config: Config {
             address: 0xFFFF,
+            baudrate: 1000000,
             _padding: [0xFF; 2],
         },
         calibrations: [Calibration {
@@ -228,9 +234,12 @@ impl<NVM, Board: ?Sized> Nvm<NVM, Board> {
     pub(crate) fn get(&self) -> NonvolatileData {
         self.0.get()
     }
+    pub fn get_config(&self) -> Config {
+        self.get().config
+    }
 }
 impl<NVM: NonvolatileStorage<Board>, Board: ?Sized> Nvm<NVM, Board> {
-    pub(crate) async fn new(nvm: NVM) -> Result<Self, NVM::Error> {
+    pub async fn new(nvm: NVM) -> Result<Self, NVM::Error> {
         let data = nb_await!(nvm.read())?;
         let data = NonvolatileData::try_ref_from_prefix(&data).unwrap().0;
         Ok(Self(Cell::new(*data), nvm, PhantomData))

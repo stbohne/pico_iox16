@@ -150,3 +150,7 @@ macro_rules! nb_await {
     };
 }
 pub use nb_await;
+
+pub trait System<Board: ?Sized>: Sized {
+    fn reboot(&self) -> !;
+}

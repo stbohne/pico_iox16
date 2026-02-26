@@ -13,6 +13,7 @@ use futures::future::{Either, select};
 use defmt::*;
 use defmt_rtt as _;
 use embedded_hal::digital::OutputPin;
+use pico_iox16_firmware::nvm::NonvolatileStorage as _;
 use rp235x_hal::adc::AdcPin;
 use rp235x_hal::clocks::init_clocks_and_plls;
 use rp235x_hal::gpio::{Pins, PullNone};
@@ -103,6 +104,9 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    let nvm = Nvm::take().unwrap();
+    let Ok(nvm) = block_on(pico_iox16_firmware::nvm::Nvm::new(nvm));
+    let baudrate = nvm.get_config().baudrate;
     let mut uart = Uart::new(
         rp235x_hal::uart::UartPeripheral::new(
             pac.UART0,
@@ -110,7 +114,7 @@ fn main() -> ! {
             &mut pac.RESETS,
         )
         .enable(
-            UartConfig::new(115_200.Hz(), DataBits::Eight, None, StopBits::One),
+            UartConfig::new(baudrate.Hz(), DataBits::Eight, None, StopBits::One),
             clocks.peripheral_clock.freq(),
         )
         .unwrap(),
@@ -150,14 +154,15 @@ fn main() -> ! {
         AdcPin::new(gpio27).unwrap(),
     );
 
-    let nvm = Nvm::take().unwrap();
+    let system = runtime::System;
     let main = pin!(main_loop.main_loop(
         &mut uart,
         &mut uart_send,
         &timer,
         &mut output,
         &mut input,
-        nvm,
+        &nvm,
+        &system
     ));
     let blink = pin!(blink(&mut led_pin, &timer));
     let Either::Left((Err(err), _)) = block_on(select(main, blink));

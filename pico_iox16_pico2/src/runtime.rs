@@ -1,6 +1,5 @@
 use core::convert::Infallible;
 
-use cortex_m::prelude::_embedded_hal_PwmPin as _;
 use defmt::info;
 use embedded_hal::pwm::SetDutyCycle;
 use embedded_hal_0_2::PwmPin;
@@ -120,5 +119,17 @@ impl<S: AnySlice, C: ChannelId> pico_iox16_firmware::output::PwmChannel<Board> f
     }
     fn get_duty_cycle(&self) -> Result<u16, Self::Error> {
         Ok(self.get_duty())
+    }
+}
+
+pub struct System;
+impl pico_iox16_firmware::runtime::System<Board> for System {
+    fn reboot(&self) -> ! {
+        rp235x_hal::rom_data::reboot(
+            0x0100, // NO_RETURN_ON_SUCCESS
+            1, // delay in ms (0 doesn't seem to work)
+            0, // the boot diagnostic "partition" (low 8 bits only)
+            0);
+        panic!("Reboot failed");
     }
 }
